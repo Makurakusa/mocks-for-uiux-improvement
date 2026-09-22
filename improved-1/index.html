@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TeamBoard(Improved-1) - チームA 開発ダッシュボード</title>
+
+<script src="https://unpkg.com/vue@3.4.31/dist/vue.global.prod.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/element-plus@2.7.6/dist/index.css" />
+<link rel="stylesheet" href="https://unpkg.com/element-plus@2.7.6/theme-chalk/dark/css-vars.css" />
+<script src="https://unpkg.com/element-plus@2.7.6/dist/index.full.js"></script>
+<script src="https://unpkg.com/@element-plus/icons-vue@2.3.1"></script>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<div id="app"></div>
+
+<script type="text/x-template" id="task-card-template">
+<el-card :id="'task-' + task.id" class="task-card" :class="{ highlighted: highlighted }" shadow="never">
+  <div class="task-title">{{ task.title }}</div>
+
+  <div class="task-row">
+    <el-avatar :size="20">{{ memberInitial(task.assigneeId) }}</el-avatar>
+    <span class="assignee-name">{{ memberName(task.assigneeId) }}</span>
+  </div>
+
+  <div class="task-row">
+    <el-tag size="small" :type="isOverdue(task) ? 'danger' : 'info'">期限: {{ formatDate(task.dueDate) }}</el-tag>
+    <el-tag size="small" :type="priorityTagType(task.priority)">{{ task.priority }}</el-tag>
+  </div>
+
+  <div class="task-row task-labels">
+    <el-tag size="small" v-for="label in task.labels" :key="label" effect="plain">{{ label }}</el-tag>
+  </div>
+
+  <div class="task-note-area">
+    <template v-if="task.note">
+      <div class="task-note" :class="{ expanded: noteExpanded }">{{ task.note }}</div>
+      <button type="button" class="note-toggle" @click="noteExpanded = !noteExpanded">
+        {{ noteExpanded ? '閉じる' : 'もっと見る' }}
+      </button>
+    </template>
+    <div v-else class="task-note task-note-empty">メモなし</div>
+  </div>
+
+  <div class="task-row task-lane-select">
+    <span class="lane-select-label">レーン:</span>
+    <el-select
+      :model-value="task.lane"
+      size="small"
+      @change="(val) => { task.lane = val; $emit('lane-change', task); }"
+    >
+      <el-option v-for="l in lanes" :key="l.id" :label="l.name" :value="l.id" />
+    </el-select>
+  </div>
+
+  <div class="task-actions">
+    <el-button size="small" type="primary" plain @click="$emit('edit', task)">
+      <el-icon><Edit /></el-icon> 編集
+    </el-button>
+    <el-button size="small" type="primary" plain @click="$emit('duplicate', task)">
+      <el-icon><CopyDocument /></el-icon> 複製
+    </el-button>
+    <el-button size="small" type="danger" plain @click="$emit('delete', task)">
+      <el-icon><Delete /></el-icon> 削除
+    </el-button>
+  </div>
+</el-card>
+</script>
+
+<script type="text/x-template" id="app-template">
+<div :class="{ dark: isDark }">
+
+  <el-container class="app-shell">
+    <el-aside class="sidebar" :width="sidebarOpen ? '200px' : '0px'">
+      <div class="sidebar-nav" v-show="sidebarOpen">
+        <el-menu :default-active="'dashboard'" class="sidebar-menu">
+          <el-menu-item index="dashboard">
+            <el-icon><Odometer /></el-icon>
+            <span>ダッシュボード</span>
+          </el-menu-item>
+          <el-menu-item index="members" disabled>
+            <el-icon><User /></el-icon>
+            <span>メンバー</span>
+          </el-menu-item>
+          <el-menu-item index="reports" disabled>
+            <el-icon><DataAnalysis /></el-icon>
+            <span>レポート</span>
+          </el-menu-item>
+          <el-menu-item index="settings" disabled>
+            <el-icon><Setting /></el-icon>
+            <span>設定</span>
+          </el-menu-item>
+        </el-menu>
+      </div>
+    </el-aside>
+
+    <el-container class="main-shell">
+      <el-header class="app-header">
+        <div class="header-left">
+          <el-button text class="sidebar-toggle" @click="sidebarOpen = !sidebarOpen">
+            <el-icon :size="20"><Menu /></el-icon>
+          </el-button>
+          <span class="app-logo">📋 TeamBoard</span>
+          <span class="board-name">チームA 開発ダッシュボード</span>
+        </div>
+        <div class="header-right">
+          <el-switch
+            v-model="isDark"
+            class="theme-switch"
+            inline-prompt
+            :active-icon="Moon"
+            :inactive-icon="Sunny"
+          />
+          <span class="bell-wrapper" @click="scrollToNotifications" title="通知へ移動">
+            <el-badge :value="unreadCount" :hidden="unreadCount === 0">
+              <el-icon :size="20"><Bell /></el-icon>
+            </el-badge>
+          </span>
+          <el-dropdown>
+            <span class="user-info">
+              <el-avatar :size="28">TL</el-avatar>
+              <span class="user-name">山本 律(TL)</span>
+              <el-icon class="dropdown-arrow"><ArrowDown /></el-icon>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item disabled>プロフィール(仮)</el-dropdown-item>
+                <el-dropdown-item disabled>ログアウト(仮)</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+      </el-header>
+
+      <el-main class="app-main">
+
+        <el-alert
+          v-if="saveErrors.length > 0"
+          class="save-error-alert"
+          type="error"
+          :closable="true"
+          @close="saveErrors = []"
+        >
+          <template #title>保存できません({{ saveErrors.length }}件のエラー)</template>
+          <ul class="save-error-list">
+            <li v-for="(err, idx) in saveErrors" :key="idx">{{ err }}</li>
+          </ul>
+        </el-alert>
+
+        <!-- サマリ部: ヘッダ直下にsticky固定 -->
+        <el-card class="panel summary-panel" shadow="never">
+          <div class="summary-cards">
+            <div class="summary-card" v-for="lane in lanes" :key="lane.id">
+              <div class="summary-value">{{ summary.byLane[lane.id] || 0 }}</div>
+              <div class="summary-label">{{ lane.name }}</div>
+            </div>
+            <div class="summary-card summary-card-danger">
+              <div class="summary-value">{{ summary.overdueCount }}</div>
+              <div class="summary-label">期限超過</div>
+            </div>
+          </div>
+          <div class="summary-member-list">
+            <span class="summary-member" v-for="m in members" :key="m.id">
+              {{ m.name }}: {{ summary.byMember[m.id] || 0 }}件
+            </span>
+          </div>
+        </el-card>
+
+        <!-- 通知部: サマリ直下。コンパクトなリスト+アコーディオン -->
+        <el-card class="panel notification-panel" shadow="never" ref="notificationSectionRef">
+          <template #header><span>🔔 通知</span></template>
+          <div class="notif-list-compact">
+            <div
+              v-for="n in visibleNotifications"
+              :key="n.id"
+              class="notif-row"
+              :class="{ unread: !n.read }"
+              @click="onNotifRowClick(n)"
+            >
+              <el-icon class="notif-row-icon">
+                <Document v-if="n.type === 'report'" />
+                <ChatDotRound v-else-if="n.type === 'message'" />
+                <WarningFilled v-else />
+              </el-icon>
+              <span class="notif-row-time">{{ formatDateTime(n.datetime) }}</span>
+              <span class="notif-row-text"><strong>{{ n.sender }}</strong>: {{ n.content }}</span>
+              <el-tag v-if="!n.read" size="small" type="warning" class="notif-unread-tag">未読</el-tag>
+              <el-button v-if="!n.read" size="small" type="info" plain @click.stop="markRead(n)">既読にする</el-button>
+            </div>
+          </div>
+          <el-collapse v-if="restNotifications.length > 0" class="notif-collapse">
+            <el-collapse-item :title="'その他の通知(' + restNotifications.length + '件)'" name="rest">
+              <div class="notif-list-compact">
+                <div
+                  v-for="n in restNotifications"
+                  :key="n.id"
+                  class="notif-row"
+                  :class="{ unread: !n.read }"
+                  @click="onNotifRowClick(n)"
+                >
+                  <el-icon class="notif-row-icon">
+                    <Document v-if="n.type === 'report'" />
+                    <ChatDotRound v-else-if="n.type === 'message'" />
+                    <WarningFilled v-else />
+                  </el-icon>
+                  <span class="notif-row-time">{{ formatDateTime(n.datetime) }}</span>
+                  <span class="notif-row-text"><strong>{{ n.sender }}</strong>: {{ n.content }}</span>
+                  <el-tag v-if="!n.read" size="small" type="warning" class="notif-unread-tag">未読</el-tag>
+                  <el-button v-if="!n.read" size="small" type="info" plain @click.stop="markRead(n)">既読にする</el-button>
+                </div>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+        </el-card>
+
+        <!-- フィルタ部 -->
+        <el-card class="panel filter-panel" shadow="never">
+          <template #header><span><el-icon><Filter /></el-icon> 絞り込む</span></template>
+          <div class="filter-grid">
+            <div class="filter-field filter-field-member">
+              <label class="filter-label">メンバー</label>
+              <el-select v-model="filters.memberIds" multiple placeholder="全員" class="filter-control">
+                <el-option v-for="m in members" :key="m.id" :label="m.name" :value="m.id" />
+              </el-select>
+            </div>
+            <div class="filter-field filter-field-date">
+              <label class="filter-label">期限</label>
+              <el-date-picker
+                v-model="filters.dateRange"
+                type="daterange"
+                value-format="YYYY-MM-DD"
+                range-separator="〜"
+                start-placeholder="開始"
+                end-placeholder="終了"
+                class="filter-control"
+              />
+            </div>
+            <div class="filter-field filter-field-label">
+              <label class="filter-label">ラベル</label>
+              <el-select v-model="filters.labelIds" multiple placeholder="すべて" class="filter-control">
+                <el-option v-for="l in labelOptions" :key="l" :label="l" :value="l" />
+              </el-select>
+            </div>
+            <div class="filter-field filter-field-keyword">
+              <label class="filter-label">タスク名</label>
+              <el-input v-model="filters.keyword" placeholder="タスク名で検索" class="filter-control" clearable />
+            </div>
+            <div class="filter-field filter-field-sort">
+              <label class="filter-label">ソート</label>
+              <el-select v-model="filters.sortKey" class="filter-control">
+                <el-option label="期限順" value="dueDate" />
+                <el-option label="優先度順" value="priority" />
+                <el-option label="作成日順" value="createdAt" />
+              </el-select>
+            </div>
+            <div class="filter-field filter-field-clear">
+              <label class="filter-label">&nbsp;</label>
+              <el-button class="filter-control" @click="clearFilters">クリア</el-button>
+            </div>
+          </div>
+        </el-card>
+
+        <!-- ボード部(タスク一覧) -->
+        <el-card class="panel board-panel" shadow="never">
+          <template #header><span>🗂 タスク一覧</span></template>
+
+          <div class="board-toolbar">
+            <el-button type="primary" @click="openAddDialog()">
+              <el-icon><Plus /></el-icon> タスク追加
+            </el-button>
+            <el-button type="success" :disabled="dirtyCount === 0" @click="openSaveConfirm">
+              変更したタスクを保存<template v-if="dirtyCount > 0">({{ dirtyCount }}件)</template>
+            </el-button>
+          </div>
+
+          <!-- PC: 横並びレーン -->
+          <div class="board-lanes-desktop">
+            <div class="lane" v-for="lane in lanes" :key="lane.id">
+              <div class="lane-header">{{ lane.name }}({{ (tasksByLane[lane.id] || []).length }})</div>
+              <div class="lane-body">
+                <task-card
+                  v-for="task in tasksByLane[lane.id]"
+                  :key="task.id"
+                  :task="task"
+                  :highlighted="highlightedTaskId === task.id"
+                  @edit="openEditDialog"
+                  @duplicate="duplicateTask"
+                  @delete="deleteTask"
+                  @lane-change="markDirtyFromTask"
+                />
+                <el-empty v-if="(tasksByLane[lane.id] || []).length === 0" description="タスクなし" :image-size="60" />
+                <div class="lane-add-row" @click="openAddDialog(lane.id)">
+                  <el-icon><Plus /></el-icon> タスクを追加
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- モバイル: レーンをアコーディオンで縦に配置 -->
+          <el-collapse v-model="mobileOpenLanes" class="board-lanes-mobile">
+            <el-collapse-item v-for="lane in lanes" :key="lane.id" :name="lane.id">
+              <template #title>
+                <span class="lane-mobile-title">レーン: {{ lane.name }}({{ (tasksByLane[lane.id] || []).length }})</span>
+              </template>
+              <div class="lane-body">
+                <task-card
+                  v-for="task in tasksByLane[lane.id]"
+                  :key="task.id"
+                  :task="task"
+                  :highlighted="highlightedTaskId === task.id"
+                  @edit="openEditDialog"
+                  @duplicate="duplicateTask"
+                  @delete="deleteTask"
+                  @lane-change="markDirtyFromTask"
+                />
+                <el-empty v-if="(tasksByLane[lane.id] || []).length === 0" description="タスクなし" :image-size="60" />
+                <div class="lane-add-row" @click="openAddDialog(lane.id)">
+                  <el-icon><Plus /></el-icon> タスクを追加
+                </div>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+        </el-card>
+
+        <!-- 外部リンク: 重要度が最も低いため最下部 -->
+        <el-card class="panel external-links-panel" shadow="never">
+          <template #header><span>🔗 外部リンク</span></template>
+          <ul class="external-link-list">
+            <li><a href="#">ヘルプセンター(仮)</a></li>
+            <li><a href="#">リリースノート(仮)</a></li>
+            <li><a href="#">コミュニティフォーラム(仮)</a></li>
+          </ul>
+        </el-card>
+
+      </el-main>
+    </el-container>
+  </el-container>
+
+  <!-- 未保存変更の常時バナー -->
+  <div class="unsaved-banner" v-if="dirtyCount > 0">
+    <el-icon><InfoFilled /></el-icon>
+    <span>{{ dirtyCount }}件のタスクを編集中です。<wbr />変更内容を確定させる場合は<wbr />「保存」ボタンを押下してください。</span>
+  </div>
+
+  <!-- タスク追加・編集ダイアログ -->
+  <el-dialog v-model="taskDialogVisible" :title="dialogMode === 'add' ? 'タスク追加' : 'タスク編集'" width="480px">
+    <el-form :model="taskForm" label-width="80px">
+      <el-form-item label="タスク名">
+        <el-input v-model="taskForm.title" placeholder="タスク名を入力" />
+      </el-form-item>
+      <el-form-item label="担当者">
+        <el-select v-model="taskForm.assigneeId" placeholder="未設定" clearable style="width: 100%">
+          <el-option v-for="m in members" :key="m.id" :label="m.name" :value="m.id" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="期限">
+        <el-date-picker v-model="taskForm.dueDate" type="date" value-format="YYYY-MM-DD" placeholder="未設定" style="width: 100%" />
+      </el-form-item>
+      <el-form-item label="優先度">
+        <el-select v-model="taskForm.priority" style="width: 100%">
+          <el-option v-for="p in priorities" :key="p" :label="p" :value="p" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="ラベル">
+        <el-select v-model="taskForm.labels" multiple style="width: 100%">
+          <el-option v-for="l in labelOptions" :key="l" :label="l" :value="l" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="レーン">
+        <el-select v-model="taskForm.lane" style="width: 100%">
+          <el-option v-for="l in lanes" :key="l.id" :label="l.name" :value="l.id" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="メモ">
+        <el-input v-model="taskForm.note" type="textarea" :rows="3" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="taskDialogVisible = false">キャンセル</el-button>
+      <el-button type="primary" @click="submitTaskForm">OK</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 保存確認ダイアログ -->
+  <el-dialog v-model="saveConfirmVisible" title="変更内容の確認" width="480px">
+    <p>以下の変更を保存します。</p>
+    <ul class="change-summary-list">
+      <li v-for="[id, change] in changedTasksList" :key="id">
+        <el-tag
+          size="small"
+          :type="change.type === 'deleted' ? 'danger' : change.type === 'added' ? 'success' : 'warning'"
+        >{{ change.type === 'added' ? '追加' : change.type === 'deleted' ? '削除' : '編集' }}</el-tag>
+        {{ change.title }}
+      </li>
+    </ul>
+    <template #footer>
+      <el-button @click="saveConfirmVisible = false">キャンセル</el-button>
+      <el-button type="success" @click="confirmSave">確定する</el-button>
+    </template>
+  </el-dialog>
+
+</div>
+</script>
+
+<script type="module">
+import { members, lanes, priorities, labelOptions, tasks as initialTasks, notifications as initialNotifications } from '../shared/data.js';
+import { filterTasks, sortTasks, groupTasksByLane, computeSummary, validateTask, priorityTagType, formatDate, formatDateTime, isOverdue as isOverdueLogic } from '../shared/logic.js';
+
+const { createApp, ref, reactive, computed, nextTick } = Vue;
+const { Moon, Sunny } = ElementPlusIconsVue;
+
+function memberName(id) {
+  const m = members.find((mm) => mm.id === id);
+  return m ? m.name : '未設定';
+}
+function memberInitial(id) {
+  const m = members.find((mm) => mm.id === id);
+  return m ? m.name.charAt(0) : '?';
+}
+function isOverdue(task) {
+  return isOverdueLogic(task);
+}
+
+const TaskCard = {
+  name: 'TaskCard',
+  props: { task: Object, highlighted: Boolean },
+  emits: ['edit', 'duplicate', 'delete', 'lane-change'],
+  template: '#task-card-template',
+  setup() {
+    const noteExpanded = ref(false);
+    return { noteExpanded, lanes, priorityTagType, formatDate, isOverdue, memberName, memberInitial };
+  },
+};
+
+const app = createApp({
+  template: '#app-template',
+  components: { TaskCard },
+  setup() {
+    const tasks = reactive(initialTasks.map((t) => ({ ...t, labels: [...t.labels] })));
+    const notifications = reactive(initialNotifications.map((n) => ({ ...n })));
+
+    const sidebarOpen = ref(true);
+    const isDark = ref(false);
+    const notificationSectionRef = ref(null);
+    const highlightedTaskId = ref(null);
+    const saveErrors = ref([]);
+    const mobileOpenLanes = ref(['todo']);
+
+    // 未保存変更の追跡(taskId -> { type: 'added'|'edited'|'deleted', title })
+    const changedTasks = reactive(new Map());
+    const dirtyCount = computed(() => changedTasks.size);
+    const changedTasksList = computed(() => Array.from(changedTasks.entries()));
+    const saveConfirmVisible = ref(false);
+
+    function markDirty(taskId, title) {
+      const prev = changedTasks.get(taskId);
+      changedTasks.set(taskId, { type: prev && prev.type === 'added' ? 'added' : 'edited', title });
+    }
+    function markDeleted(task) {
+      const prev = changedTasks.get(task.id);
+      if (prev && prev.type === 'added') {
+        changedTasks.delete(task.id);
+      } else {
+        changedTasks.set(task.id, { type: 'deleted', title: task.title });
+      }
+    }
+    function markDirtyFromTask(task) {
+      markDirty(task.id, task.title);
+    }
+
+    window.addEventListener('beforeunload', (e) => {
+      if (changedTasks.size > 0) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
+    const filters = reactive({
+      memberIds: [],
+      labelIds: [],
+      dateRange: null,
+      keyword: '',
+      sortKey: 'dueDate',
+    });
+    function clearFilters() {
+      filters.memberIds = [];
+      filters.labelIds = [];
+      filters.dateRange = null;
+      filters.keyword = '';
+      filters.sortKey = 'dueDate';
+    }
+
+    const filteredTasks = computed(() => {
+      const filtered = filterTasks(tasks, {
+        memberIds: filters.memberIds,
+        labelIds: filters.labelIds,
+        dateRange: filters.dateRange,
+        keyword: filters.keyword,
+      });
+      return sortTasks(filtered, filters.sortKey);
+    });
+
+    const tasksByLane = computed(() => groupTasksByLane(filteredTasks.value, lanes));
+    const summary = computed(() => computeSummary(tasks, lanes, members));
+    const sortedNotifications = computed(() => [...notifications].sort((a, b) => new Date(b.datetime) - new Date(a.datetime)));
+    const unreadCount = computed(() => notifications.filter((n) => !n.read).length);
+    const visibleNotifications = computed(() => sortedNotifications.value.slice(0, 3));
+    const restNotifications = computed(() => sortedNotifications.value.slice(3));
+
+    Vue.watch(isDark, (val) => {
+      document.documentElement.classList.toggle('dark', val);
+    });
+
+    // タスク追加・編集ダイアログ
+    const taskDialogVisible = ref(false);
+    const dialogMode = ref('add');
+    const taskForm = reactive({ id: null, title: '', assigneeId: null, dueDate: null, priority: '中', labels: [], lane: 'todo', note: '' });
+
+    function openAddDialog(laneId) {
+      dialogMode.value = 'add';
+      Object.assign(taskForm, { id: null, title: '', assigneeId: null, dueDate: null, priority: '中', labels: [], lane: laneId || 'todo', note: '' });
+      taskDialogVisible.value = true;
+    }
+    function openEditDialog(task) {
+      dialogMode.value = 'edit';
+      Object.assign(taskForm, { ...task, labels: [...task.labels] });
+      taskDialogVisible.value = true;
+    }
+    function submitTaskForm() {
+      if (dialogMode.value === 'add') {
+        const newId = 't' + (Math.max(0, ...tasks.map((t) => Number(t.id.replace('t', '')) || 0)) + 1);
+        tasks.push({ ...taskForm, id: newId, createdAt: new Date().toISOString().slice(0, 10) });
+        changedTasks.set(newId, { type: 'added', title: taskForm.title });
+      } else {
+        const target = tasks.find((t) => t.id === taskForm.id);
+        if (target) Object.assign(target, { ...taskForm });
+        markDirty(taskForm.id, taskForm.title);
+      }
+      taskDialogVisible.value = false;
+    }
+    function deleteTask(task) {
+      const idx = tasks.findIndex((t) => t.id === task.id);
+      if (idx !== -1) tasks.splice(idx, 1);
+      markDeleted(task);
+    }
+    function duplicateTask(task) {
+      const newId = 't' + (Math.max(0, ...tasks.map((t) => Number(t.id.replace('t', '')) || 0)) + 1);
+      const newTitle = task.title + '(コピー)';
+      tasks.push({ ...task, id: newId, title: newTitle, labels: [...task.labels] });
+      changedTasks.set(newId, { type: 'added', title: newTitle });
+    }
+
+    function openSaveConfirm() {
+      const errors = [];
+      tasks.forEach((task) => {
+        validateTask(task).forEach((msg) => errors.push(`「${task.title || '(タスク名未入力)'}」: ${msg}`));
+      });
+      saveErrors.value = errors;
+      if (errors.length === 0) {
+        saveConfirmVisible.value = true;
+      }
+    }
+    function confirmSave() {
+      changedTasks.clear();
+      saveConfirmVisible.value = false;
+      ElementPlus.ElMessage.success('保存しました(モックのため実際には保存されません)');
+    }
+
+    function scrollToNotifications() {
+      notificationSectionRef.value?.$el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    function markRead(notif) {
+      notif.read = true;
+    }
+    function onNotifRowClick(n) {
+      if (n.relatedTaskId) jumpToTask(n.relatedTaskId);
+    }
+    function jumpToTask(taskId) {
+      nextTick(() => {
+        const el = document.getElementById('task-' + taskId);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          highlightedTaskId.value = taskId;
+          setTimeout(() => { highlightedTaskId.value = null; }, 1500);
+        }
+      });
+    }
+
+    return {
+      members, lanes, priorities, labelOptions,
+      tasks, notifications,
+      filters, sidebarOpen, isDark, mobileOpenLanes,
+      filteredTasks, tasksByLane, summary, sortedNotifications, unreadCount,
+      visibleNotifications, restNotifications,
+      taskDialogVisible, dialogMode, taskForm,
+      saveErrors, notificationSectionRef, highlightedTaskId,
+      changedTasks, changedTasksList, dirtyCount, saveConfirmVisible,
+      memberName, memberInitial, isOverdue, priorityTagType, formatDate, formatDateTime,
+      openAddDialog, openEditDialog, submitTaskForm, deleteTask, duplicateTask,
+      markDirtyFromTask, clearFilters,
+      openSaveConfirm, confirmSave,
+      scrollToNotifications, markRead, onNotifRowClick, jumpToTask,
+      Moon, Sunny,
+    };
+  },
+});
+
+for (const [key, comp] of Object.entries(ElementPlusIconsVue)) {
+  app.component(key, comp);
+}
+app.use(ElementPlus);
+app.mount('#app');
+</script>
+</body>
+</html>
